@@ -15,7 +15,7 @@ from ._const import (
     YandexAPIError,
     YandexRequestError,
 )
-from _utils import _get_sid, _detect_lang_pair, _smart_split, error_delay
+from ._utils import _get_sid, _detect_lang_pair, _smart_split, error_delay
 
 
 async def _make_yandex_request(client: Client, api_url: str, query: dict, form_data: dict) -> dict:

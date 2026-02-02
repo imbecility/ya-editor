@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 [project]
 name = "ya-editor"
-version = "0.0.1"
+version = "0.0.2"
 description = "Yandex translate, correct, rewrite, and improve for Russian and English"
 readme = "README.md"
 license = "MIT"
