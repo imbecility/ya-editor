@@ -1,0 +1,154 @@
+name: Build and publish Python distributions to PyPI
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+
+env:
+  PYTHON_VERSION: "3.13"
+
+jobs:
+  prepare:
+    name: Получение версии релиза
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+      tag_name: ${{ steps.get_version.outputs.tag_name }}
+    steps:
+      - name: Проверка репозитория
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Определение версии
+        id: get_version
+        shell: bash
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            TAG_NAME="${{ github.ref_name }}"
+            echo "Запуск по тегу: $TAG_NAME"
+          else
+            echo "Ручной запуск, поиск последнего тега..."
+            TAG_NAME=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+            if [[ -z "$TAG_NAME" ]]; then
+              echo "Теги не найдены!"
+              exit 1
+            fi
+            echo "Найден последний тег: $TAG_NAME"
+          fi
+          
+          CLEAN_VERSION=${TAG_NAME#v}
+          
+          echo "Версия для публикации: $CLEAN_VERSION"
+          echo "version=$CLEAN_VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Валидация формата версии
+        run: |
+          VERSION="${{ steps.get_version.outputs.version }}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([a-zA-Z0-9._-]*)?$ ]]; then
+            echo "Неверный формат версии: $VERSION"
+            echo "   Ожидается: MAJOR.MINOR.PATCH[.suffix]"
+            exit 1
+          fi
+          echo "Формат версии корректен: $VERSION"
+  build:
+    name: 🔨 Сборка пакета
+    needs: [prepare]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Проверка репозитория
+        uses: actions/checkout@v4
+
+      - name: Установка Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Установка uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Проверка версии в pyproject.toml
+        run: |
+          EXPECTED_VERSION="${{ needs.prepare.outputs.version }}"
+          
+          if [[ -f "pyproject.toml" ]]; then
+            TOML_VERSION=$(grep -E '^version\s*=' pyproject.toml | head -1 | sed 's/.*=\s*["\x27]\(.*\)["\x27].*/\1/')
+            
+            if [[ -z "$TOML_VERSION" ]]; then
+              echo "Версия в pyproject.toml не найдена (возможно, динамическая)"
+            elif [[ "$TOML_VERSION" != "$EXPECTED_VERSION" ]]; then
+              echo "Несоответствие версий!"
+              echo "   Тег: $EXPECTED_VERSION"
+              echo "   pyproject.toml: $TOML_VERSION"
+              echo ""
+              echo "Обновите версию в pyproject.toml перед созданием тега"
+              exit 1
+            else
+              echo "Версии совпадают: $EXPECTED_VERSION"
+            fi
+          fi
+
+      - name: Сборка sdist и wheel
+        run: |
+          echo "Сборка пакета версии ${{ needs.prepare.outputs.version }}..."
+          uv build --sdist --wheel
+          echo ""
+          echo "Собранные артефакты:"
+          ls -la dist/
+
+      - name: Проверка пакета (twine check)
+        run: |
+          uv pip install --system twine
+          echo "Проверка метаданных пакета..."
+          twine check dist/*
+          echo "Проверка пройдена"
+
+      - name: Загрузка артефактов
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+          if-no-files-found: error
+          retention-days: 5
+
+  publish-to-pypi:
+    name: 🚀 Публикация на PyPI
+    needs: [prepare, build]
+    if: |
+      always() && 
+      needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/${{ github.event.repository.name }}/${{ needs.prepare.outputs.version }}/
+    permissions:
+      id-token: write  # Для Trusted Publishing (опционально)
+    steps:
+      - name: Скачивание артефактов
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Список файлов для публикации
+        run: |
+          echo "Публикация версии: ${{ needs.prepare.outputs.version }}"
+          echo ""
+          echo "Файлы:"
+          ls -la dist/
+
+      - name: 🚀 Публикация на PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          user: __token__
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          # Опции:
+          # print-hash: true        # Вывести хэши файлов
+          # verbose: true           # Подробный вывод
+          # skip-existing: true     # Пропустить если версия существует
